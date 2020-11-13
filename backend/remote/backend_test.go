@@ -1,13 +1,16 @@
 package remote
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
 
+	tfe "github.com/hashicorp/go-tfe"
+	version "github.com/hashicorp/go-version"
 	"github.com/hashicorp/terraform-svchost/disco"
 	"github.com/hashicorp/terraform/backend"
-	"github.com/hashicorp/terraform/version"
+	tfversion "github.com/hashicorp/terraform/version"
 	"github.com/zclconf/go-cty/cty"
 
 	backendLocal "github.com/hashicorp/terraform/backend/local"
@@ -196,11 +199,11 @@ func TestRemote_versionConstraints(t *testing.T) {
 	}
 
 	// Save and restore the actual version.
-	p := version.Prerelease
-	v := version.Version
+	p := tfversion.Prerelease
+	v := tfversion.Version
 	defer func() {
-		version.Prerelease = p
-		version.Version = v
+		tfversion.Prerelease = p
+		tfversion.Version = v
 	}()
 
 	for name, tc := range cases {
@@ -208,8 +211,8 @@ func TestRemote_versionConstraints(t *testing.T) {
 		b := New(testDisco(s))
 
 		// Set the version for this test.
-		version.Prerelease = tc.prerelease
-		version.Version = tc.version
+		tfversion.Prerelease = tc.prerelease
+		tfversion.Version = tc.version
 
 		// Validate
 		_, valDiags := b.PrepareConfig(tc.config)
@@ -428,17 +431,17 @@ func TestRemote_checkConstraints(t *testing.T) {
 	}
 
 	// Save and restore the actual version.
-	p := version.Prerelease
-	v := version.Version
+	p := tfversion.Prerelease
+	v := tfversion.Version
 	defer func() {
-		version.Prerelease = p
-		version.Version = v
+		tfversion.Prerelease = p
+		tfversion.Version = v
 	}()
 
 	for name, tc := range cases {
 		// Set the version for this test.
-		version.Prerelease = tc.prerelease
-		version.Version = tc.version
+		tfversion.Prerelease = tc.prerelease
+		tfversion.Version = tc.version
 
 		// Check the constraints.
 		diags := b.checkConstraints(tc.constraints)
@@ -446,5 +449,72 @@ func TestRemote_checkConstraints(t *testing.T) {
 			(diags.Err() == nil || !strings.Contains(diags.Err().Error(), tc.result)) {
 			t.Fatalf("%s: unexpected constraints result: %v", name, diags.Err())
 		}
+	}
+}
+
+func TestRemote_StateMgrVersionCheck(t *testing.T) {
+	b, bCleanup := testBackendDefault(t)
+	defer bCleanup()
+
+	// Some fixed versions for testing with. This logic is a simple string
+	// comparison, so we don't need many test cases.
+	v0135 := version.Must(version.NewSemver("0.13.5"))
+	v0140 := version.Must(version.NewSemver("0.14.0"))
+
+	// Save original local version state and restore afterwards
+	p := tfversion.Prerelease
+	v := tfversion.Version
+	s := tfversion.SemVer
+	defer func() {
+		tfversion.Prerelease = p
+		tfversion.Version = v
+		tfversion.SemVer = s
+	}()
+
+	// For this test, the local Terraform version is set to 0.14.0
+	tfversion.Prerelease = ""
+	tfversion.Version = v0140.String()
+	tfversion.SemVer = v0140
+
+	// Ensure the backend is at the default state, unlike most of the rest of
+	// the tests in this package. This will trigger the StateMgr fallback error
+	// checking which is in place to ensure that we don't accidentally add a
+	// new code path which can modify state locally.
+	b.ignoreVersionConflict = false
+
+	// Update the mock remote workspace Terraform version to match the local
+	// Terraform version
+	if _, err := b.client.Workspaces.Update(
+		context.Background(),
+		b.organization,
+		b.workspace,
+		tfe.WorkspaceUpdateOptions{
+			TerraformVersion: tfe.String(v0140.String()),
+		},
+	); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	// This should succeed
+	if _, err := b.StateMgr(backend.DefaultStateName); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	// Now change the remote workspace to a different Terraform version
+	if _, err := b.client.Workspaces.Update(
+		context.Background(),
+		b.organization,
+		b.workspace,
+		tfe.WorkspaceUpdateOptions{
+			TerraformVersion: tfe.String(v0135.String()),
+		},
+	); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	// This should fail
+	want := `Remote workspace Terraform version "0.13.5" does not match local Terraform version "0.14.0"`
+	if _, err := b.StateMgr(backend.DefaultStateName); err.Error() != want {
+		t.Fatalf("wrong error\n got: %v\nwant: %v", err.Error(), want)
 	}
 }

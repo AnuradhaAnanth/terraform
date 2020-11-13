@@ -156,6 +156,9 @@ func testBackend(t *testing.T, obj cty.Value) (*Remote, func()) {
 		}
 	}
 
+	// Ignore version conflicts for most tests
+	b.IgnoreVersionConflict()
+
 	return b, s.Close
 }
 
