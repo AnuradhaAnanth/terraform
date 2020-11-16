@@ -1,3 +1,4 @@
+GOFMT_FILES?=$$(find . -not -path "./vendor/*" -type f -name '*.go')
 WEBSITE_REPO=github.com/hashicorp/terraform-website
 VERSION?="0.3.44"
 
@@ -23,6 +24,9 @@ protobuf:
 	bash scripts/protobuf-check.sh
 	bash internal/tfplugin5/generate.sh
 	bash plans/internal/planproto/generate.sh
+
+fmt:
+	gofmt -w $(GOFMT_FILES)
 
 fmtcheck:
 	@sh -c "'$(CURDIR)/scripts/gofmtcheck.sh'"
